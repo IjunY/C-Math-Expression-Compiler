@@ -38,7 +38,7 @@ typedef struct ASTUnit {
 	exit(0);\
 }
 // You may set DEBUG=1 to debug. Remember setting back to 0 before submit.
-#define DEBUG 0
+#define DEBUG 1
 // Split the input char array into token linked list.
 Token *lexer(const char *in);
 // Create a new token.
@@ -82,7 +82,9 @@ int main() {
 		Token *content = lexer(input);
 		size_t len = token_list_to_arr(&content);
 		if (len == 0) continue;
+		if (DEBUG) token_print(content, len);
 		AST *ast_root = parser(content, len);
+		if (DEBUG) AST_print(ast_root);
 		semantic_check(ast_root);
 		codegen(ast_root);
 		free(content);
@@ -223,8 +225,14 @@ AST *parse(Token *arr, int l, int r, GrammarState S) {
 			}
 			return parse(arr, l, r, MUL_EXPR);
 		case MUL_EXPR:
-			// TODO: Implement MUL_EXPR.
-			// hint: Take ADD_EXPR as reference.
+			// COMPLETED
+			if ((nxt = findNextSection(arr, r, l, condMUL)) != -1) {
+				now = new_AST(arr[nxt].kind, 0);
+				now->lhs = parse(arr, l, nxt - 1, MUL_EXPR);
+				now->rhs = parse(arr, nxt + 1, r, UNARY_EXPR);
+				return now;
+			}
+			return parse(arr, l, r, UNARY_EXPR);
 		case UNARY_EXPR:
 			// TODO: Implement UNARY_EXPR.
 			// hint: Take POSTFIX_EXPR as reference.
