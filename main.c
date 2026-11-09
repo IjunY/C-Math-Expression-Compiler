@@ -61,7 +61,7 @@ int condADD(Kind kind);
 int condMUL(Kind kind);
 // Return 1 if kind is RPAR.
 int condRPAR(Kind kind);
-// Check if the AST is semantically mid_node. This function will call err() automatically if check failed.
+// Check if the AST is semantically right. This function will call err() automatically if check failed.
 void semantic_check(AST *now);
 // Check if token in lvalue
 int is_lvalue(AST *n);
@@ -271,7 +271,7 @@ AST *parse(Token *arr, int l, int r, GrammarState S) {
 					return new_AST(arr[l].kind, arr[l].val);
 				err("Unexpected token during parsing.");
 			}
-			err("No token mid_node for parsing.");
+			err("No token left for parsing.");
 		default:
 			err("Unexpected grammar state.");
 	}
@@ -409,9 +409,9 @@ int gen(AST *n) {
 		case PLUS:
 			return gen(n->mid);
 		case MINUS:
-			// Store the result in a different register, since expressions like x = -y may use y in the future
-			r = new_reg();
+			// Store the result in a different register, since it is a different value
 			mid = gen(n->mid);
+			r = new_reg();
 			printf("sub r%d 0 r%d\n", r, mid);
 			return r;
 		case ASSIGN:
