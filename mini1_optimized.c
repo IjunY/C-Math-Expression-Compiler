@@ -25,8 +25,6 @@ typedef struct ASTUnit {
 	Kind kind;
 	int val; // record the integer value or variable name
 	struct ASTUnit *lhs, *mid, *rhs;
-	bool in_register;
-	bool changed;
 } AST;
 
 /// utility interfaces
@@ -77,10 +75,10 @@ AST *unwrap_paren(AST*);
 // Returns operator name for binary operators
 char *opname(Kind);
 // Generate ASM code.
-int gen(AST *n);
-void codegen(AST *root);
+int gen(AST *n, bool in_register[], bool changed[]);
+void codegen(AST *root, bool in_register[], bool changed[]);
 // Gets the register number
-int get_register(AST *n);
+int get_register(AST *n, bool in_register[]);
 // Free the whole AST.
 void freeAST(AST *now);
 
@@ -96,6 +94,8 @@ char input[MAX_LENGTH];
 int main(void) {
 	AST *ast_root;
 	AST *temp_tree[16]; // Guaranteed that there are not over 15 testcases
+	bool in_register[3] = {false};
+	bool changed[3] = {false};
 	int inp_count = 0;
 	while (fgets(input, MAX_LENGTH, stdin) != NULL) {
 		Token *content = lexer(input);
@@ -110,8 +110,13 @@ int main(void) {
 		free(content);
 	}
 	for (int i = 0; i < inp_count; ++i) {
-		codegen(temp_tree[i]);
-	} // Final stores go here
+		codegen(temp_tree[i], in_register, changed);
+	} 
+	// Final stores go here
+	for (int i = 0; i < 3; ++i) {
+		if (changed[i] == true) printf("store [%d] r%d\n", i * 4, i);
+	}
+
 	for (int i = 0; i < inp_count; ++i) {
 		freeAST(temp_tree[i]);
 	}
@@ -296,8 +301,6 @@ AST *new_AST(Kind kind, int val) {
 	res->kind = kind;
 	res->val = val;
 	res->lhs = res->mid = res->rhs = NULL;
-	res->in_register = false;
-	res->changed = false;
 	return res;
 }
 
@@ -396,7 +399,7 @@ char *opname(Kind k) {
 }
 
 // returns the register number (int)
-int gen(AST *n) {
+int gen(AST *n, bool in_register[], bool changed[]) {
 	int r, r_new, left, right, mid;
 	AST *left_node, *mid_node;
 	switch (n->kind) {
@@ -405,15 +408,15 @@ int gen(AST *n) {
 			printf("add r%d 0 %d\n", r, n->val);
 			return r;
 		case IDENTIFIER:
-			r = get_register(n);
+			r = get_register(n, in_register);
 			return r;
 		case ADD:
 		case SUB:
 		case MUL:
 		case DIV:
 		case REM:
-			left = gen(n->lhs);
-			right = gen(n->rhs);
+			left = gen(n->lhs, in_register, changed);
+			right = gen(n->rhs, in_register, changed);
 			r = new_reg();
 		
 			// result = left OPERATOR right 
@@ -422,48 +425,52 @@ int gen(AST *n) {
 			return r;
 		case LPAR:
 		case PLUS:
-			return gen(n->mid);
+			return gen(n->mid, in_register, changed);
 		case MINUS:
 			// Store the result in a different register, since it is a different value
-			mid = gen(n->mid);
+			mid = gen(n->mid, in_register, changed);
 			r = new_reg();
 			printf("sub r%d 0 r%d\n", r, mid);
 			return r;
 		case ASSIGN:
 			left_node = unwrap_paren(n->lhs);
-			right = gen(n->rhs);
-			r = get_register(left_node);
-			printf("add r%d 0 %d\n", r, right);
-			left_node->changed = true;
+			right = gen(n->rhs, in_register, changed);
+
+			// skips the helper function to avoid loading
+			r = left_node->val - 'x';
+
+			printf("add r%d 0 r%d\n", r, right);
+			in_register[r] = true;
+			changed[r] = true;
 			return r;
 		case PREINC:
 			mid_node = unwrap_paren(n->mid);
-			r = get_register(mid_node);
+			r = get_register(mid_node, in_register);
 			// modify the value in the register directly
 			printf("add r%d r%d 1\n", r, r);
-			mid_node->changed = true;
+			changed[r] = true;
 			return r;
 		case PREDEC:
 			mid_node = unwrap_paren(n->mid);
-			r = get_register(mid_node);
+			r = get_register(mid_node, in_register);
 			printf("sub r%d r%d 1\n", r, r);
-			mid_node->changed = true;
+			changed[r] = true;
 			return r;
 		case POSTINC:
 			mid_node = unwrap_paren(n->mid);
-			r = get_register(mid_node);
+			r = get_register(mid_node, in_register);
 			r_new = new_reg();
-			printf("add r%d 0 r%d", r_new, r);
-			printf("add r%d r%d 1\n", r_new, r);
-			mid_node->changed = true;
+			printf("add r%d 0 r%d\n", r_new, r);
+			printf("add r%d r%d 1\n", r, r);
+			changed[r] = true;
 			return r_new;
 		case POSTDEC:
 			mid_node = unwrap_paren(n->mid);
-			r = get_register(mid_node);
+			r = get_register(mid_node, in_register);
 			r_new = new_reg();
-			printf("add r%d 0 r%d", r_new, r);
+			printf("add r%d 0 r%d\n", r_new, r);
 			printf("sub r%d r%d 1\n", r, r);
-			mid_node->changed = true;
+			changed[r] = true;
 			return r_new;
 		default:
 			err("Unexpected AST node.");
@@ -471,24 +478,21 @@ int gen(AST *n) {
 	}
 }
 
-int get_register(AST *n) {
-	int r = 0;
-	if (n->val == 'x') r = 0;
-	else if (n->val == 'y') r = 1;
-	else if (n->val == 'z') r = 2;
+int get_register(AST *n, bool in_register[]) {
+	int r = n->val - 'x';
 
-	if (!n->in_register) {
+	if (in_register[r] == false) {
 		printf("load r%d [%d]\n", r, addr_of(n));
-		n->in_register = true;
+		in_register[r] = true;
 	}
 
 	return r;
 }
 
-void codegen(AST *root) {
+void codegen(AST *root, bool in_register[], bool changed[]) {
 	if (root == NULL) return;
-	next_reg = 0;
-	gen(root);
+	next_reg = 3; // 0, 1, 2 are used by x, y, z
+	gen(root, in_register, changed);
 }
 
 void freeAST(AST *now) {
