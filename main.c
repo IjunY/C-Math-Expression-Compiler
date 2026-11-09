@@ -38,7 +38,7 @@ typedef struct ASTUnit {
 	exit(0);\
 }
 // You may set DEBUG=1 to debug. Remember setting back to 0 before submit.
-#define DEBUG 1
+#define DEBUG 0
 // Split the input char array into token linked list.
 Token *lexer(const char *in);
 // Create a new token.
@@ -61,11 +61,20 @@ int condADD(Kind kind);
 int condMUL(Kind kind);
 // Return 1 if kind is RPAR.
 int condRPAR(Kind kind);
-// Check if the AST is semantically right. This function will call err() automatically if check failed.
+// Check if the AST is semantically mid_node. This function will call err() automatically if check failed.
 void semantic_check(AST *now);
 // Check if token in lvalue
 int is_lvalue(AST *n);
+// Returns a new register number
+int new_reg();
+// Returns the memory address of a identifier
+int addr_of(AST*);
+// Unwraps any parentheses
+AST *unwrap_paren(AST*);
+// Returns operator name for binary operators
+char *opname(Kind);
 // Generate ASM code.
+int gen(AST *n);
 void codegen(AST *root);
 // Free the whole AST.
 void freeAST(AST *now);
@@ -236,8 +245,6 @@ AST *parse(Token *arr, int l, int r, GrammarState S) {
 			}
 			return parse(arr, l, r, UNARY_EXPR);
 		case UNARY_EXPR:
-			// TODO: Implement UNARY_EXPR.
-			// hint: Take POSTFIX_EXPR as reference.
 			if (arr[l].kind == PREINC || arr[l].kind == PREDEC || arr[l].kind == PLUS || arr[l].kind == MINUS) {
 				now = new_AST(arr[l].kind, 0);
 				now->mid = parse(arr, l + 1, r, UNARY_EXPR);
@@ -245,6 +252,7 @@ AST *parse(Token *arr, int l, int r, GrammarState S) {
 			}
 			return parse(arr, l, r, POSTFIX_EXPR);
 		case POSTFIX_EXPR:
+			// if expression ends with PREINC or PREDEC
 			if (arr[r].kind == PREINC || arr[r].kind == PREDEC) {
 				// translate "PREINC", "PREDEC" into "POSTINC", "POSTDEC"
 				now = new_AST(arr[r].kind - PREINC + POSTINC, 0);
@@ -263,7 +271,7 @@ AST *parse(Token *arr, int l, int r, GrammarState S) {
 					return new_AST(arr[l].kind, arr[l].val);
 				err("Unexpected token during parsing.");
 			}
-			err("No token left for parsing.");
+			err("No token mid_node for parsing.");
 		default:
 			err("Unexpected grammar state.");
 	}
@@ -338,9 +346,121 @@ int is_lvalue(AST *n) {
 	return n->kind == IDENTIFIER;
 }
 
+static int next_reg = 0;
+int new_reg() {
+	return next_reg++;
+}
+
+int addr_of(AST *var) {
+	return (var->val - 'x') * 4;
+}
+
+AST *unwrap_paren(AST *var) {
+	while (var->kind == LPAR) {
+		var = var->mid;
+	}
+	return var;
+}
+
+char *opname(Kind k) {
+	switch (k) {
+		case ADD:
+			return "add";
+		case SUB:
+			return "sub";
+		case MUL:
+			return "mul";
+		case DIV:
+			return "div";
+		case REM:
+			return "rem";
+		default:
+			return NULL;
+	}
+}
+
+// returns the register number (int)
+int gen(AST *n) {
+	int r, r_new, left, right, mid;
+	AST *left_node, *mid_node;
+	switch (n->kind) {
+		case CONSTANT:
+			r = new_reg();
+			printf("add r%d 0 %d\n", r, n->val);
+			return r;
+		case IDENTIFIER:
+			r = new_reg();
+			printf("load r%d [%d]\n", r, addr_of(n));
+			return r;
+		case ADD:
+		case SUB:
+		case MUL:
+		case DIV:
+		case REM:
+			left = gen(n->lhs);
+			right = gen(n->rhs);
+			r = new_reg();
+		
+			// result = left OPERATOR right 
+			// store the result to r
+			printf("%s r%d r%d r%d\n", opname(n->kind), r, left, right);
+			return r;
+		case LPAR:
+		case PLUS:
+			return gen(n->mid);
+		case MINUS:
+			// Store the result in a different register, since expressions like x = -y may use y in the future
+			r = new_reg();
+			mid = gen(n->mid);
+			printf("sub r%d 0 r%d\n", r, mid);
+			return r;
+		case ASSIGN:
+			left_node = unwrap_paren(n->lhs);
+			right = gen(n->rhs);
+			printf("store [%d] r%d\n", addr_of(left_node), right);
+			return right;
+		case PREINC:
+			mid_node = unwrap_paren(n->mid);
+			r = new_reg();
+			// load mid, add 1 to it, and writes back
+			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			printf("add r%d r%d 1\n", r, r);
+			printf("store [%d] r%d\n", addr_of(mid_node), r);
+			return r;
+		case PREDEC:
+			mid_node = unwrap_paren(n->mid);
+			r = new_reg();
+			// load mid, sub 1 to it, and writes back
+			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			printf("sub r%d r%d 1\n", r, r);
+			printf("store [%d] r%d\n", addr_of(mid_node), r);
+			return r;
+		case POSTINC:
+			mid_node = unwrap_paren(n->mid);
+			r = new_reg();
+			r_new = new_reg();
+			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			printf("add r%d r%d 1\n", r_new, r);
+			printf("store [%d] r%d\n", addr_of(mid_node), r_new);	
+			return r;
+		case POSTDEC:
+			mid_node = unwrap_paren(n->mid);
+			r = new_reg();
+			r_new = new_reg();
+			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			printf("sub r%d r%d 1\n", r_new, r);
+			printf("store [%d] r%d\n", addr_of(mid_node), r_new);	
+			return r;
+		default:
+			err("Unexpected AST node.");
+
+	}
+}
+
 void codegen(AST *root) {
-	// TODO: Implement your codegen in your own way.
-	// You may modify the function parameter or the return type, even the whole structure as you wish.
+	if (root == NULL) return;
+	next_reg = 0;
+	gen(root);
 }
 
 void freeAST(AST *now) {
