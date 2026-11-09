@@ -1,3 +1,4 @@
+#include <stdbool.h>
 #include <stdio.h>
 #include <ctype.h>
 #include <stdlib.h>
@@ -24,6 +25,8 @@ typedef struct ASTUnit {
 	Kind kind;
 	int val; // record the integer value or variable name
 	struct ASTUnit *lhs, *mid, *rhs;
+	bool in_register;
+	bool changed;
 } AST;
 
 /// utility interfaces
@@ -63,11 +66,11 @@ int condMUL(Kind kind);
 int condRPAR(Kind kind);
 // Check if the AST is semantically right. This function will call err() automatically if check failed.
 void semantic_check(AST *now);
-// Check if token in lvalue
+// Check if token in lvalue.
 int is_lvalue(AST *n);
-// Returns a new register number
-int new_reg();
-// Returns the memory address of a identifier
+// Returns a new register number.
+int new_reg(void);
+// Returns the memory address of a identifier.
 int addr_of(AST*);
 // Unwraps any parentheses
 AST *unwrap_paren(AST*);
@@ -76,6 +79,8 @@ char *opname(Kind);
 // Generate ASM code.
 int gen(AST *n);
 void codegen(AST *root);
+// Gets the register number
+int get_register(AST *n);
 // Free the whole AST.
 void freeAST(AST *now);
 
@@ -88,9 +93,9 @@ void AST_print(AST *head);
 
 char input[MAX_LENGTH];
 
-int main() {
+int main(void) {
 	AST *ast_root;
-	AST *temp_tree[16];
+	AST *temp_tree[16]; // Guaranteed that there are not over 15 testcases
 	int inp_count = 0;
 	while (fgets(input, MAX_LENGTH, stdin) != NULL) {
 		Token *content = lexer(input);
@@ -106,8 +111,10 @@ int main() {
 	}
 	for (int i = 0; i < inp_count; ++i) {
 		codegen(temp_tree[i]);
+	} // Final stores go here
+	for (int i = 0; i < inp_count; ++i) {
+		freeAST(temp_tree[i]);
 	}
-	freeAST(ast_root);
 	return 0;
 }
 
@@ -289,6 +296,8 @@ AST *new_AST(Kind kind, int val) {
 	res->kind = kind;
 	res->val = val;
 	res->lhs = res->mid = res->rhs = NULL;
+	res->in_register = false;
+	res->changed = false;
 	return res;
 }
 
@@ -354,7 +363,7 @@ int is_lvalue(AST *n) {
 }
 
 static int next_reg = 0;
-int new_reg() {
+int new_reg(void) {
 	return next_reg++;
 }
 
@@ -396,8 +405,7 @@ int gen(AST *n) {
 			printf("add r%d 0 %d\n", r, n->val);
 			return r;
 		case IDENTIFIER:
-			r = new_reg();
-			printf("load r%d [%d]\n", r, addr_of(n));
+			r = get_register(n);
 			return r;
 		case ADD:
 		case SUB:
@@ -424,44 +432,57 @@ int gen(AST *n) {
 		case ASSIGN:
 			left_node = unwrap_paren(n->lhs);
 			right = gen(n->rhs);
-			printf("store [%d] r%d\n", addr_of(left_node), right);
-			return right;
+			r = get_register(left_node);
+			printf("add r%d 0 %d\n", r, right);
+			left_node->changed = true;
+			return r;
 		case PREINC:
 			mid_node = unwrap_paren(n->mid);
-			r = new_reg();
-			// load mid, add 1 to it, and writes back
-			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			r = get_register(mid_node);
+			// modify the value in the register directly
 			printf("add r%d r%d 1\n", r, r);
-			printf("store [%d] r%d\n", addr_of(mid_node), r);
+			mid_node->changed = true;
 			return r;
 		case PREDEC:
 			mid_node = unwrap_paren(n->mid);
-			r = new_reg();
-			// load mid, sub 1 to it, and writes back
-			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			r = get_register(mid_node);
 			printf("sub r%d r%d 1\n", r, r);
-			printf("store [%d] r%d\n", addr_of(mid_node), r);
+			mid_node->changed = true;
 			return r;
 		case POSTINC:
 			mid_node = unwrap_paren(n->mid);
-			r = new_reg();
+			r = get_register(mid_node);
 			r_new = new_reg();
-			printf("load r%d [%d]\n", r, addr_of(mid_node));
+			printf("add r%d 0 r%d", r_new, r);
 			printf("add r%d r%d 1\n", r_new, r);
-			printf("store [%d] r%d\n", addr_of(mid_node), r_new);	
-			return r;
+			mid_node->changed = true;
+			return r_new;
 		case POSTDEC:
 			mid_node = unwrap_paren(n->mid);
-			r = new_reg();
+			r = get_register(mid_node);
 			r_new = new_reg();
-			printf("load r%d [%d]\n", r, addr_of(mid_node));
-			printf("sub r%d r%d 1\n", r_new, r);
-			printf("store [%d] r%d\n", addr_of(mid_node), r_new);	
-			return r;
+			printf("add r%d 0 r%d", r_new, r);
+			printf("sub r%d r%d 1\n", r, r);
+			mid_node->changed = true;
+			return r_new;
 		default:
 			err("Unexpected AST node.");
 
 	}
+}
+
+int get_register(AST *n) {
+	int r = 0;
+	if (n->val == 'x') r = 0;
+	else if (n->val == 'y') r = 1;
+	else if (n->val == 'z') r = 2;
+
+	if (!n->in_register) {
+		printf("load r%d [%d]\n", r, addr_of(n));
+		n->in_register = true;
+	}
+
+	return r;
 }
 
 void codegen(AST *root) {
